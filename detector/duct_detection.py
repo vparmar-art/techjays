@@ -15,6 +15,7 @@ from django.conf import settings
 
 
 MARKER_FIRST_14_ONLY = True
+SUPPORTED_DIAMETERS = [8, 10, 12, 14, 18]
 MIN_SEGMENT_LENGTH_PX = 22.0
 DEDUPE_BIN_PX = 10
 TILE_SIZE_PX = 1024
@@ -89,6 +90,31 @@ SIZE_MARKER_NUM_TOKEN_RE = re.compile(r'^14(?:"|”|″|in)?$', re.IGNORECASE)
 SIZE_MARKER_SYM_TOKEN_RE = re.compile(r'^[⌀Øø]$')
 SIZE_MARKER_ZEROISH_TOKEN_RE = re.compile(r'^[0Oo]$')
 SIZE_MARKER_QUOTE_TOKEN_RE = re.compile(r'^(?:"|”|″)$')
+
+
+def _diameter_text_regex(target_diameter: int) -> re.Pattern[str]:
+    return re.compile(
+        rf'(?:\b{target_diameter}\s*(?:"|”|″|in)?\s*[⌀Øø]|\b[⌀Øø]\s*{target_diameter}\b)',
+        re.IGNORECASE,
+    )
+
+
+def _diameter_number_token_regex(target_diameter: int) -> re.Pattern[str]:
+    return re.compile(rf'^{target_diameter}(?:"|”|″|in)?$', re.IGNORECASE)
+
+
+def _normalized_marker_label(target_diameter: int) -> str:
+    return f'{target_diameter}"Ø'
+
+
+def _validate_target_diameter(target_diameter: int | str) -> int:
+    try:
+        diameter = int(target_diameter)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("Invalid diameter value.") from exc
+    if diameter not in SUPPORTED_DIAMETERS:
+        raise ValueError(f"Unsupported diameter '{diameter}'. Allowed: {SUPPORTED_DIAMETERS}")
+    return diameter
 
 
 def _response_error_detail(response: requests.Response) -> str:
@@ -786,7 +812,14 @@ def _normalize_marker_bbox(raw_bbox: Any, width: int, height: int) -> list[int] 
     return [x1i, y1i, x2i, y2i]
 
 
-def _normalize_size_markers(payload: dict[str, Any], width: int, height: int) -> tuple[list[dict[str, Any]], list[str]]:
+def _normalize_size_markers(
+    payload: dict[str, Any],
+    width: int,
+    height: int,
+    target_diameter: int = 14,
+) -> tuple[list[dict[str, Any]], list[str]]:
+    diameter = _validate_target_diameter(target_diameter)
+    diameter_re = _diameter_text_regex(diameter)
     issues: list[str] = []
     raw = payload.get("size_markers", payload.get("markers", [])) if isinstance(payload, dict) else []
     if not isinstance(raw, list):
@@ -798,7 +831,7 @@ def _normalize_size_markers(payload: dict[str, Any], width: int, height: int) ->
             issues.append(f"size_markers[{idx}] is not an object.")
             continue
         text = str(item.get("text", "")).strip()
-        if not text or not SIZE_MARKER_TEXT_RE.search(text):
+        if not text or not diameter_re.search(text):
             continue
         bbox = _normalize_marker_bbox(item.get("bbox"), width, height)
         if not bbox:
@@ -815,6 +848,7 @@ def _normalize_size_markers(payload: dict[str, Any], width: int, height: int) ->
                 "bbox_diag_px": bbox_diag_px,
                 "local_radius_px": round(max(SIZE_MARKER_MIN_RADIUS_PX, SIZE_MARKER_RADIUS_DIAG_SCALE * bbox_diag_px), 2),
                 "confidence": _normalize_confidence(item.get("confidence", 0.7), default=0.7),
+                "diameter": diameter,
             }
         )
     markers = _dedupe_size_markers(markers)
@@ -1009,7 +1043,17 @@ def _extract_vision_word_tokens(raw_response: dict[str, Any], width: int, height
     return tokens
 
 
-def _extract_vision_size_markers(tokens: list[dict[str, Any]], width: int, height: int) -> tuple[dict[str, Any], list[str]]:
+def _extract_vision_size_markers(
+    tokens: list[dict[str, Any]],
+    width: int,
+    height: int,
+    target_diameter: int = 14,
+) -> tuple[dict[str, Any], list[str]]:
+    diameter = _validate_target_diameter(target_diameter)
+    diameter_re = _diameter_text_regex(diameter)
+    diameter_num_re = _diameter_number_token_regex(diameter)
+    marker_label = _normalized_marker_label(diameter)
+
     issues: list[str] = []
     token_debug: list[dict[str, Any]] = []
     marker_rows: list[dict[str, Any]] = []
@@ -1023,8 +1067,8 @@ def _extract_vision_size_markers(tokens: list[dict[str, Any]], width: int, heigh
     for token in tokens:
         compact = str(token.get("text_compact", ""))
         bbox = token.get("bbox", [0, 0, 0, 0])
-        is_direct = bool(SIZE_MARKER_TEXT_RE.search(compact))
-        is_number = bool(SIZE_MARKER_NUM_TOKEN_RE.fullmatch(compact))
+        is_direct = bool(diameter_re.search(compact))
+        is_number = bool(diameter_num_re.fullmatch(compact))
         is_symbol = bool(SIZE_MARKER_SYM_TOKEN_RE.fullmatch(compact))
         is_zeroish = bool(SIZE_MARKER_ZEROISH_TOKEN_RE.fullmatch(compact))
         is_quote = bool(SIZE_MARKER_QUOTE_TOKEN_RE.fullmatch(compact))
@@ -1114,7 +1158,7 @@ def _extract_vision_size_markers(tokens: list[dict[str, Any]], width: int, heigh
 
         marker_rows.append(
             {
-                "text": '14"Ø',
+                "text": marker_label,
                 "bbox": _bbox_union(number.get("bbox", [0, 0, 0, 0]), best_sym.get("bbox", [0, 0, 0, 0])),
                 "confidence": _normalize_confidence(
                     (float(number.get("confidence", 0.7)) + float(best_sym.get("confidence", 0.7))) / 2.0,
@@ -1168,7 +1212,7 @@ def _extract_vision_size_markers(tokens: list[dict[str, Any]], width: int, heigh
 
         marker_rows.append(
             {
-                "text": '14"Ø',
+                "text": marker_label,
                 "bbox": _bbox_union(n_bbox, best_quote.get("bbox", [0, 0, 0, 0])),
                 "confidence": _normalize_confidence(
                     (float(number.get("confidence", 0.7)) + float(best_quote.get("confidence", 0.7))) / 2.0,
@@ -1191,7 +1235,7 @@ def _extract_vision_size_markers(tokens: list[dict[str, Any]], width: int, heigh
         internal_markers.append(
             {
                 "id": f"M{len(internal_markers) + 1}",
-                "text": str(row.get("text", '14"Ø')).strip() or '14"Ø',
+                "text": str(row.get("text", marker_label)).strip() or marker_label,
                 "bbox": [x1, y1, x2, y2],
                 "center": [int((x1 + x2) / 2), int((y1 + y2) / 2)],
                 "bbox_diag_px": bbox_diag_px,
@@ -1199,6 +1243,7 @@ def _extract_vision_size_markers(tokens: list[dict[str, Any]], width: int, heigh
                 "confidence": _normalize_confidence(row.get("confidence", 0.7), default=0.7),
                 "source": row.get("source", ""),
                 "token_ids": row.get("token_ids", []),
+                "diameter": diameter,
             }
         )
 
@@ -1223,7 +1268,9 @@ def _extract_vision_size_markers(tokens: list[dict[str, Any]], width: int, heigh
     if not tokens:
         issues.append("Vision OCR returned no word tokens in the plan crop.")
     if tokens and not size_markers_payload:
-        issues.append("Vision OCR found text but no valid 14-inch markers (14\"⌀ / 14\"Ø / 14\"ø / Ø14).")
+        issues.append(
+            f"Vision OCR found text but no valid {diameter}-inch markers ({diameter}\"⌀ / {diameter}\"Ø / {diameter}\"ø / Ø{diameter})."
+        )
 
     return {
         "size_markers": size_markers_payload,
@@ -2220,7 +2267,7 @@ def _draw_marker_boxes_overlay(
     for box in marker_boxes:
         x1, y1, x2, y2 = box.get("bbox", [0, 0, 0, 0])
         box_id = str(box.get("box_id", box.get("id", "BOX"))).strip() or "BOX"
-        cv2.rectangle(overlay, (int(x1), int(y1)), (int(x2), int(y2)), (255, 0, 0), 2, cv2.LINE_AA)
+        cv2.rectangle(overlay, (int(x1), int(y1)), (int(x2), int(y2)), (255, 0, 0), 3, cv2.LINE_AA)
         text_y = max(16, int(y2) + 16)
         cv2.putText(overlay, box_id, (int(x1), text_y), cv2.FONT_HERSHEY_SIMPLEX, 0.42, (255, 0, 0), 1, cv2.LINE_AA)
 
@@ -2580,7 +2627,13 @@ def _call_gemini_size_markers(image_b64: str, width: int, height: int) -> dict[s
     }
 
 
-def _call_google_vision_size_markers(image_b64: str, width: int, height: int) -> dict[str, Any]:
+def _call_google_vision_size_markers(
+    image_b64: str,
+    width: int,
+    height: int,
+    target_diameter: int = 14,
+) -> dict[str, Any]:
+    diameter = _validate_target_diameter(target_diameter)
     key = settings.GEMINI_API_KEY
     if not key:
         return {
@@ -2659,8 +2712,9 @@ def _call_google_vision_size_markers(image_b64: str, width: int, height: int) ->
         }
 
     tokens = _extract_vision_word_tokens(raw_response if isinstance(raw_response, dict) else {}, width, height)
-    parsed_json, extraction_issues = _extract_vision_size_markers(tokens, width, height)
+    parsed_json, extraction_issues = _extract_vision_size_markers(tokens, width, height, target_diameter=diameter)
     parsed_json["issues"] = extraction_issues
+    parsed_json["target_diameter"] = diameter
 
     return {
         "ok": True,
@@ -2818,6 +2872,380 @@ def _call_gemini_marker_line_picker(
     }
 
 
+def _read_json_file(path: Path, default: Any) -> Any:
+    try:
+        with open(path, "r", encoding="utf-8") as handle:
+            return json.load(handle)
+    except Exception:
+        return default
+
+
+def initialize_lsd_upload_run(pdf_bytes: bytes, media_root: Path) -> dict[str, Any]:
+    media_root.mkdir(parents=True, exist_ok=True)
+    run_id = f'{datetime.now().strftime("%Y%m%d_%H%M%S")}_{uuid4().hex[:6]}'
+    run_dir = media_root / "runs" / run_id
+    run_dir.mkdir(parents=True, exist_ok=True)
+
+    original = _render_pdf_first_page(pdf_bytes)
+    h, w = original.shape[:2]
+    cv2.imwrite(str(run_dir / "page.png"), original)
+
+    roi = _estimate_plan_roi(original)
+    rx1, ry1, rx2, ry2 = roi
+    plan_crop = original[ry1:ry2, rx1:rx2]
+    cv2.imwrite(str(run_dir / "plan_crop.png"), plan_crop)
+
+    raw_candidates = _extract_lsd_raw_lines_tiled(plan_crop)
+    with open(run_dir / "candidate_lines.json", "w", encoding="utf-8") as handle:
+        json.dump(raw_candidates, handle, indent=2)
+    with open(run_dir / "candidate_lines_raw.json", "w", encoding="utf-8") as handle:
+        json.dump(raw_candidates, handle, indent=2)
+
+    box_candidates = _extract_lsd_box_candidates(raw_candidates, plan_crop.shape[1], plan_crop.shape[0])
+    with open(run_dir / "lsd_box_candidates.json", "w", encoding="utf-8") as handle:
+        json.dump(box_candidates, handle, indent=2)
+
+    run_state = {
+        "run_id": run_id,
+        "image_width": w,
+        "image_height": h,
+        "plan_roi": {"x1": rx1, "y1": ry1, "x2": rx2, "y2": ry2},
+        "plan_crop_width": int(plan_crop.shape[1]),
+        "plan_crop_height": int(plan_crop.shape[0]),
+        "available_sizes": SUPPORTED_DIAMETERS,
+        "raw_candidate_line_count": len(raw_candidates),
+        "lsd_box_candidate_count": len(box_candidates),
+        "files": {
+            "page": f"runs/{run_id}/page.png",
+            "plan_crop": f"runs/{run_id}/plan_crop.png",
+            "candidate_lines": f"runs/{run_id}/candidate_lines.json",
+            "candidate_lines_raw": f"runs/{run_id}/candidate_lines_raw.json",
+            "lsd_box_candidates": f"runs/{run_id}/lsd_box_candidates.json",
+            "run_state": f"runs/{run_id}/run_state.json",
+        },
+    }
+    with open(run_dir / "run_state.json", "w", encoding="utf-8") as handle:
+        json.dump(run_state, handle, indent=2)
+
+    return {
+        "status": "ok",
+        "run_id": run_id,
+        "page_url": run_state["files"]["page"],
+        "plan_crop_url": run_state["files"]["plan_crop"],
+        "available_sizes": SUPPORTED_DIAMETERS,
+        "raw_candidate_line_count": len(raw_candidates),
+        "lsd_box_candidate_count": len(box_candidates),
+        "files": run_state["files"],
+    }
+
+
+def detect_diameter_for_run(
+    run_id: str,
+    target_diameter: int | str,
+    media_root: Path,
+    provider: str = "gemini",
+) -> dict[str, Any]:
+    diameter = _validate_target_diameter(target_diameter)
+    run_dir = media_root / "runs" / str(run_id)
+    if not run_dir.exists():
+        raise FileNotFoundError(f"Run '{run_id}' not found.")
+
+    run_state = _read_json_file(run_dir / "run_state.json", {})
+    if not isinstance(run_state, dict):
+        raise RuntimeError("Invalid run state.")
+
+    page_path = run_dir / "page.png"
+    crop_path = run_dir / "plan_crop.png"
+    original = cv2.imread(str(page_path))
+    plan_crop = cv2.imread(str(crop_path))
+    if original is None or plan_crop is None:
+        raise RuntimeError("Run artifacts are missing page or crop images.")
+
+    h, w = original.shape[:2]
+    roi_map = run_state.get("plan_roi", {})
+    rx1 = int(roi_map.get("x1", 0))
+    ry1 = int(roi_map.get("y1", 0))
+    rx2 = int(roi_map.get("x2", w))
+    ry2 = int(roi_map.get("y2", h))
+    roi = (rx1, ry1, rx2, ry2)
+
+    raw_candidates = _read_json_file(run_dir / "candidate_lines_raw.json", [])
+    box_candidates = _read_json_file(run_dir / "lsd_box_candidates.json", [])
+    if not isinstance(raw_candidates, list):
+        raw_candidates = []
+    if not isinstance(box_candidates, list):
+        box_candidates = []
+
+    ok, encoded = cv2.imencode(".jpg", plan_crop, [int(cv2.IMWRITE_JPEG_QUALITY), 90])
+    if not ok:
+        raise RuntimeError("Failed to encode plan crop for OCR request.")
+    image_b64 = base64.b64encode(encoded.tobytes()).decode("utf-8")
+
+    marker_result = _call_google_vision_size_markers(
+        image_b64,
+        plan_crop.shape[1],
+        plan_crop.shape[0],
+        target_diameter=diameter,
+    )
+    parsed_marker_payload = marker_result.get("parsed_json", {}) if isinstance(marker_result.get("parsed_json", {}), dict) else {}
+    marker_extraction_issues = parsed_marker_payload.get("issues", [])
+    marker_extraction_issues = [str(msg) for msg in marker_extraction_issues] if isinstance(marker_extraction_issues, list) else []
+    size_markers, marker_issues = _normalize_size_markers(
+        parsed_marker_payload,
+        plan_crop.shape[1],
+        plan_crop.shape[0],
+        target_diameter=diameter,
+    )
+    marker_issues = marker_extraction_issues + marker_issues
+    if not size_markers:
+        marker_issues.append(f'No {diameter}-inch diameter markers ({diameter}"⌀) detected.')
+
+    box_candidates = _augment_boxes_with_marker_local_candidates(
+        box_candidates,
+        size_markers,
+        raw_candidates,
+        plan_crop.shape[1],
+        plan_crop.shape[0],
+    )
+
+    marker_boxes_crop, match_issues = _match_markers_to_lsd_boxes(size_markers, box_candidates)
+    normalization_issues = marker_issues + match_issues
+    duct_segments, crop_line_segments = _build_segments_from_marker_boxes(
+        marker_boxes_crop,
+        plan_crop.shape[1],
+        plan_crop.shape[0],
+    )
+    line_segments = _project_line_segments_to_full_image(crop_line_segments, roi, w, h)
+
+    full_markers: list[dict[str, Any]] = []
+    for marker in size_markers:
+        mx, my = marker["center"]
+        bx1, by1, bx2, by2 = marker["bbox"]
+        full_markers.append(
+            {
+                "id": marker["id"],
+                "text": marker["text"],
+                "center": [mx + rx1, my + ry1],
+                "bbox": [bx1 + rx1, by1 + ry1, bx2 + rx1, by2 + ry1],
+                "local_radius_px": float(marker.get("local_radius_px", 70.0)),
+                "confidence": marker.get("confidence", 0.0),
+            }
+        )
+
+    full_markers_by_id = {str(marker["id"]): marker for marker in full_markers}
+    marker_boxes: list[dict[str, Any]] = []
+    for item in marker_boxes_crop:
+        marker_id = str(item.get("marker_id", ""))
+        bbox_crop = item.get("bbox", [0, 0, 0, 0])
+        bbox_full = _project_bbox_to_full_image(bbox_crop, roi, w, h)
+        marker_full = full_markers_by_id.get(marker_id, {})
+        marker_boxes.append(
+            {
+                **item,
+                "bbox_crop": bbox_crop,
+                "bbox": bbox_full,
+                "marker_bbox_full": marker_full.get("bbox", item.get("marker_bbox", [])),
+                "marker_center_full": marker_full.get("center", item.get("marker_center", [])),
+            }
+        )
+
+    marker_suffix = f"_{diameter}"
+    marker_box_matches_rel = f"runs/{run_id}/marker_box_matches{marker_suffix}.json"
+    with open(run_dir / f"marker_box_matches{marker_suffix}.json", "w", encoding="utf-8") as handle:
+        json.dump({"matches": marker_boxes, "issues": normalization_issues}, handle, indent=2)
+
+    marker_raw_rel = f"runs/{run_id}/size_markers_raw{marker_suffix}.json"
+    with open(run_dir / f"size_markers_raw{marker_suffix}.json", "w", encoding="utf-8") as handle:
+        json.dump(marker_result.get("raw_response", {}), handle, indent=2, default=str)
+
+    marker_norm_rel = f"runs/{run_id}/size_markers{marker_suffix}.json"
+    with open(run_dir / f"size_markers{marker_suffix}.json", "w", encoding="utf-8") as handle:
+        json.dump({"markers": size_markers, "issues": normalization_issues, "error": marker_result.get("error", "")}, handle, indent=2)
+
+    vision_tokens_rel = f"runs/{run_id}/vision_tokens{marker_suffix}.json"
+    with open(run_dir / f"vision_tokens{marker_suffix}.json", "w", encoding="utf-8") as handle:
+        json.dump(
+            {
+                "tokens": parsed_marker_payload.get("vision_tokens", []),
+                "marker_candidates_px": parsed_marker_payload.get("vision_marker_candidates_px", []),
+                "issues": marker_extraction_issues,
+            },
+            handle,
+            indent=2,
+        )
+
+    provider_runs: list[dict[str, Any]] = [{"run_index": 1, **marker_result}]
+    provider_result = provider_runs[0]
+    provider_error_summary = str(marker_result.get("error", "")).strip()
+
+    raw_provider_response_rel = f"runs/{run_id}/provider_raw_response{marker_suffix}.json"
+    with open(run_dir / f"provider_raw_response{marker_suffix}.json", "w", encoding="utf-8") as handle:
+        json.dump(
+            [
+                {
+                    "run_index": r["run_index"],
+                    "ok": r.get("ok", False),
+                    "http_status": r.get("http_status"),
+                    "error": r.get("error", ""),
+                    "raw_response": r.get("raw_response", {}),
+                }
+                for r in provider_runs
+            ],
+            handle,
+            indent=2,
+            default=str,
+        )
+
+    provider_text_rel = f"runs/{run_id}/provider_model_text{marker_suffix}.txt"
+    with open(run_dir / f"provider_model_text{marker_suffix}.txt", "w", encoding="utf-8") as handle:
+        for r in provider_runs:
+            handle.write(f"===== RUN {r['run_index']} =====\n")
+            handle.write(str(r.get("model_text", "")))
+            handle.write("\n\n")
+
+    provider_parsed_rel = f"runs/{run_id}/provider_parsed{marker_suffix}.json"
+    with open(run_dir / f"provider_parsed{marker_suffix}.json", "w", encoding="utf-8") as handle:
+        json.dump(
+            [
+                {
+                    "run_index": r["run_index"],
+                    "ok": r.get("ok", False),
+                    "parsed_json": r.get("parsed_json", {}),
+                }
+                for r in provider_runs
+            ],
+            handle,
+            indent=2,
+            default=str,
+        )
+
+    normalization_meta = {
+        "mode": "lsd_marker_boxes_dynamic",
+        "selected_diameter": diameter,
+        "marker_first_mode": MARKER_FIRST_14_ONLY,
+        "input_duct_segments": len(marker_boxes),
+        "accepted_duct_segments": len(duct_segments),
+        "accepted_line_segments": len(crop_line_segments),
+        "invalid_items": 0,
+        "rejected_paths": 0,
+        "short_or_duplicate_lines": 0,
+        "issues": normalization_issues,
+    }
+
+    verification = _verify_marker_box_matches(
+        original,
+        line_segments,
+        roi,
+        provider_error_summary,
+        normalization_meta.get("issues", []),
+        full_markers,
+        marker_boxes,
+    )
+
+    overlay = _draw_marker_boxes_overlay(original, marker_boxes, full_markers)
+    overlay_rel = f"runs/{run_id}/overlay{marker_suffix}.png"
+    cv2.imwrite(str(run_dir / f"overlay{marker_suffix}.png"), overlay)
+    # Keep backward-compatible latest overlay pointer.
+    cv2.imwrite(str(run_dir / "overlay.png"), overlay)
+
+    attempts = [
+        {
+            "provider": "google_vision",
+            "run_index": 1,
+            "status": "ok" if marker_result.get("ok") else "warn",
+            "selected_count": str(len(marker_boxes)),
+            "detail": marker_result.get("error") or f"{diameter}-inch marker detection success",
+        }
+    ]
+
+    warning_reasons = verification.get("reasons", [])
+    result_rel = f"runs/{run_id}/result{marker_suffix}.json"
+    result = {
+        "run_id": run_id,
+        "selected_diameter": diameter,
+        "available_sizes": SUPPORTED_DIAMETERS,
+        "provider_requested": (provider or "").strip().lower() or "gemini",
+        "provider_used": "google_vision",
+        "provider_http_status": provider_result.get("http_status"),
+        "provider_error": provider_error_summary,
+        "marker_first_mode": MARKER_FIRST_14_ONLY,
+        "detection_mode": "lsd_marker_boxes_dynamic",
+        "selection_mode": "lsd_marker_boxes_dynamic",
+        "lsd_enabled": True,
+        "gemini_enabled": False,
+        "image_width": w,
+        "image_height": h,
+        "detection_count": len(line_segments),
+        "duct_segment_count": len(duct_segments),
+        "line_segment_count": len(line_segments),
+        "raw_candidate_line_count": len(raw_candidates),
+        "centerline_candidate_count": 0,
+        "candidate_line_count": len(raw_candidates),
+        "selected_raw_candidate_count": len(marker_boxes),
+        "selected_candidate_count": len(marker_boxes),
+        "size_marker_count": len(size_markers),
+        "size_marker_seed_added_count": len(marker_boxes),
+        "expansion_added_count": 0,
+        "merged_centerline_count": 0,
+        "merged_pairs_count": 0,
+        "plan_roi": {"x1": rx1, "y1": ry1, "x2": rx2, "y2": ry2},
+        "coordinate_space": {
+            "normalized": "0..1000 relative to plan_crop.png",
+            "pixel_line_segments": "full page image coordinates",
+        },
+        "marker_boxes": marker_boxes,
+        "marker_seeding": {
+            "disabled": True,
+            "reason": "lsd_marker_boxes_dynamic uses text-in-box matching, not line seeding.",
+            "marker_count": len(size_markers),
+            "seed_count": len(marker_boxes),
+            "seed_added_count": len(marker_boxes),
+            "per_marker": [],
+        },
+        "graph_expansion": {
+            "disabled": True,
+            "reason": "Not used in lsd_marker_boxes_dynamic mode.",
+            "expanded_count": 0,
+            "component_count": 0,
+            "kept_component_count": 0,
+            "pruned_count": 0,
+        },
+        "ducts": duct_segments,
+        "duct_segments": duct_segments,
+        "line_segments": line_segments,
+        "duct_lines": line_segments,
+        "verification": verification,
+        "normalization": normalization_meta,
+        "raw_provider_response_path": raw_provider_response_rel,
+        "warnings": warning_reasons,
+        "attempts": attempts,
+        "files": {
+            "page": f"runs/{run_id}/page.png",
+            "plan_crop": f"runs/{run_id}/plan_crop.png",
+            "overlay": overlay_rel,
+            "json": result_rel,
+            "candidate_lines": f"runs/{run_id}/candidate_lines.json",
+            "candidate_lines_raw": f"runs/{run_id}/candidate_lines_raw.json",
+            "lsd_box_candidates": f"runs/{run_id}/lsd_box_candidates.json",
+            "marker_box_matches": marker_box_matches_rel,
+            "size_markers_raw": marker_raw_rel,
+            "size_markers": marker_norm_rel,
+            "vision_tokens": vision_tokens_rel,
+            "raw_provider_response": raw_provider_response_rel,
+            "provider_text": provider_text_rel,
+            "provider_parsed": provider_parsed_rel,
+            "run_state": f"runs/{run_id}/run_state.json",
+        },
+    }
+
+    with open(run_dir / f"result{marker_suffix}.json", "w", encoding="utf-8") as handle:
+        json.dump(result, handle, indent=2, default=str)
+    with open(run_dir / "result.json", "w", encoding="utf-8") as handle:
+        json.dump(result, handle, indent=2, default=str)
+
+    return result
+
+
 def run_detection(pdf_bytes: bytes, provider: str, media_root: Path) -> dict[str, Any]:
     media_root.mkdir(parents=True, exist_ok=True)
     run_id = f'{datetime.now().strftime("%Y%m%d_%H%M%S")}_{uuid4().hex[:6]}'
@@ -2851,7 +3279,12 @@ def run_detection(pdf_bytes: bytes, provider: str, media_root: Path) -> dict[str
             raise RuntimeError("Failed to encode page image for AI request.")
         image_b64 = base64.b64encode(encoded.tobytes()).decode("utf-8")
 
-        marker_result = _call_google_vision_size_markers(image_b64, plan_crop.shape[1], plan_crop.shape[0])
+        marker_result = _call_google_vision_size_markers(
+            image_b64,
+            plan_crop.shape[1],
+            plan_crop.shape[0],
+            target_diameter=14,
+        )
         parsed_marker_payload = marker_result.get("parsed_json", {}) if isinstance(marker_result.get("parsed_json", {}), dict) else {}
         marker_extraction_issues = parsed_marker_payload.get("issues", [])
         marker_extraction_issues = [str(msg) for msg in marker_extraction_issues] if isinstance(marker_extraction_issues, list) else []
@@ -2859,6 +3292,7 @@ def run_detection(pdf_bytes: bytes, provider: str, media_root: Path) -> dict[str
             parsed_marker_payload,
             plan_crop.shape[1],
             plan_crop.shape[0],
+            target_diameter=14,
         )
         marker_issues = marker_extraction_issues + marker_issues
         if not size_markers:

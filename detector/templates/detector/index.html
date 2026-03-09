@@ -47,8 +47,34 @@
     button:hover {
       background: #054ada;
     }
+    button:disabled {
+      opacity: 0.6;
+      cursor: not-allowed;
+    }
+    .size-buttons {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin-top: 8px;
+    }
+    .size-btn {
+      background: #eef4ff;
+      color: #0f62fe;
+      border: 1px solid #b6ceff;
+      padding: 8px 14px;
+    }
+    .size-btn.active {
+      background: #0f62fe;
+      color: #fff;
+      border-color: #0f62fe;
+    }
     .error {
       color: #b30000;
+      font-weight: 600;
+      margin-top: 10px;
+    }
+    .info {
+      color: #055160;
       font-weight: 600;
       margin-top: 10px;
     }
@@ -71,11 +97,79 @@
       padding: 8px 10px;
       font-size: 0.92rem;
     }
-    img {
-      width: 100%;
+    .viewer-shell {
       border: 1px solid #d9e2ec;
       border-radius: 8px;
       background: #fff;
+      overflow: hidden;
+      position: relative;
+      height: min(76vh, 900px);
+    }
+    .viewer-viewport {
+      position: relative;
+      width: 100%;
+      height: 100%;
+      overflow: hidden;
+      background: #eef2f7;
+      cursor: grab;
+      user-select: none;
+    }
+    .viewer-viewport.dragging {
+      cursor: grabbing;
+    }
+    .viewer-image {
+      position: absolute;
+      top: 0;
+      left: 0;
+      transform-origin: top left;
+      will-change: transform;
+      max-width: none;
+      border: 1px solid #d9e2ec;
+      background: #fff;
+      -webkit-user-drag: none;
+      user-drag: none;
+      user-select: none;
+    }
+    .viewer-loader {
+      position: absolute;
+      inset: 0;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      flex-direction: column;
+      gap: 10px;
+      background: rgba(255, 255, 255, 0.65);
+      backdrop-filter: blur(1px);
+      z-index: 20;
+      font-weight: 600;
+      color: #0f62fe;
+    }
+    .spinner {
+      width: 30px;
+      height: 30px;
+      border-radius: 999px;
+      border: 3px solid #c8d8ff;
+      border-top-color: #0f62fe;
+      animation: spin 0.9s linear infinite;
+    }
+    .viewer-controls {
+      display: flex;
+      gap: 8px;
+      margin-bottom: 8px;
+    }
+    .viewer-controls button {
+      background: #e9efff;
+      color: #0f62fe;
+      border: 1px solid #bfd2ff;
+      padding: 6px 10px;
+      border-radius: 6px;
+      font-size: 0.85rem;
+    }
+    .viewer-controls button:hover {
+      background: #dbe7ff;
+    }
+    @keyframes spin {
+      to { transform: rotate(360deg); }
     }
     .table-wrap {
       overflow: auto;
@@ -93,13 +187,11 @@
     th {
       background: #f6f9fc;
     }
-    pre {
-      background: #f8fafc;
-      border: 1px solid #d9e2ec;
-      border-radius: 8px;
-      padding: 10px;
-      overflow: auto;
-      font-size: 0.85rem;
+    .hidden {
+      display: none;
+    }
+    .muted {
+      color: #4f5f6f;
     }
   </style>
 </head>
@@ -107,99 +199,455 @@
   <div class="container">
     <div class="card">
       <h1>HVAC Duct Detector</h1>
-      <p class="subtitle">Assignment MVP: upload a drawing, run AI-only duct detection, and get annotated output + JSON.</p>
-      <form method="post" enctype="multipart/form-data">
+      <p class="subtitle">Step 1: Upload PDF and run LSD geometry. Step 2: Pick duct diameter and run OCR filtering.</p>
+
+      <form id="upload-form" method="post" enctype="multipart/form-data">
         {% csrf_token %}
         {{ form.as_p }}
-        <button type="submit">Detect Ducts</button>
+        <button id="upload-btn" type="submit">Detect Ducts</button>
       </form>
-      {% if error %}
-        <p class="error">{{ error }}</p>
-      {% endif %}
+      <p id="upload-info" class="info hidden"></p>
+      <p id="upload-error" class="error hidden"></p>
     </div>
 
-    {% if result %}
-      <div class="card">
-        <h2>Run Summary</h2>
-        <div class="meta">
-          <div class="chip"><strong>Run ID:</strong> {{ result.run_id }}</div>
-          <div class="chip"><strong>Requested:</strong> {{ result.provider_requested }}</div>
-          <div class="chip"><strong>Used:</strong> {{ result.provider_used }}</div>
-          <div class="chip"><strong>Duct Line Count:</strong> {{ result.detection_count }}</div>
-          <div class="chip"><strong>Selection Mode:</strong> {{ result.selection_mode }}</div>
-          <div class="chip"><strong>LSD Enabled:</strong> {{ result.lsd_enabled }}</div>
-          <div class="chip"><strong>Verification:</strong> {{ result.verification.status }}</div>
-          <div class="chip"><strong>Strong Evidence Ratio:</strong> {{ result.verification.metrics.strong_evidence_ratio }}</div>
-          <div class="chip"><strong>Marker Covered Ratio:</strong> {{ result.verification.metrics.marker_covered_ratio }}</div>
-          <div class="chip"><strong>Boundary Complete Ratio:</strong> {{ result.verification.metrics.boundary_complete_ratio }}</div>
-          <div class="chip"><strong>Seed Count:</strong> {{ result.marker_seeding.seed_count }}</div>
-          <div class="chip"><strong>Expanded Count:</strong> {{ result.graph_expansion.expanded_count }}</div>
-        </div>
-        <p>
-          <strong>Result JSON:</strong>
-          <a href="{{ media_url }}{{ result.files.json }}" target="_blank">{{ media_url }}{{ result.files.json }}</a>
-        </p>
-        <p>
-          <strong>Raw Provider Response:</strong>
-          <a href="{{ media_url }}{{ result.files.raw_provider_response }}" target="_blank">{{ media_url }}{{ result.files.raw_provider_response }}</a>
-          <br />
-          <strong>Provider Parsed JSON:</strong>
-          <a href="{{ media_url }}{{ result.files.provider_parsed }}" target="_blank">{{ media_url }}{{ result.files.provider_parsed }}</a>
-        </p>
-        {% if result.warnings %}
-          <p class="warn">Warnings:</p>
-          <ul>
-            {% for warning in result.warnings %}
-              <li>{{ warning }}</li>
-            {% endfor %}
-          </ul>
-        {% endif %}
-      </div>
+    <div id="size-card" class="card hidden">
+      <h2>Select Diameter</h2>
+      <div id="size-buttons" class="size-buttons"></div>
+    </div>
 
-      <div class="card">
-        <h2>Annotated Output</h2>
-        <img src="{{ media_url }}{{ result.files.overlay }}" alt="Duct detection overlay" />
+    <div id="viewer-card" class="card hidden">
+      <h2 id="viewer-title">Uploaded Drawing</h2>
+      <p id="viewer-subtitle" class="muted">LSD run completed. Choose a diameter button to run OCR + matching.</p>
+      <div class="viewer-controls">
+        <button id="zoom-in-btn" type="button">+</button>
+        <button id="zoom-out-btn" type="button">-</button>
       </div>
-
-      <div class="card">
-        <h2>Detected Duct Lines</h2>
-        <div class="table-wrap">
-          <table>
-            <thead>
-              <tr>
-                <th>ID</th>
-                <th>Duct ID</th>
-                <th>Type</th>
-                <th>Line (x1, y1, x2, y2)</th>
-                <th>Confidence</th>
-                <th>Length (px)</th>
-              </tr>
-            </thead>
-            <tbody>
-              {% for duct in result.duct_lines %}
-                <tr>
-                  <td>{{ duct.id }}</td>
-                  <td>{{ duct.duct_id }}</td>
-                  <td>{{ duct.duct_type }}</td>
-                  <td>{{ duct.line }}</td>
-                  <td>{{ duct.confidence }}</td>
-                  <td>{{ duct.length_px }}</td>
-                </tr>
-              {% empty %}
-                <tr>
-                  <td colspan="6">No duct lines found.</td>
-                </tr>
-              {% endfor %}
-            </tbody>
-          </table>
+      <div class="viewer-shell">
+        <div id="viewer-viewport" class="viewer-viewport">
+          <img id="viewer-image" class="viewer-image" alt="HVAC drawing viewer" draggable="false" />
+          <div id="viewer-loader" class="viewer-loader hidden">
+            <div class="spinner"></div>
+            <div id="viewer-loader-text">Loading...</div>
+          </div>
         </div>
       </div>
+    </div>
 
-      <div class="card">
-        <h2>Provider Attempts</h2>
-        <pre>{{ result.attempts }}</pre>
+    <div id="summary-card" class="card hidden">
+      <h2>Run Summary</h2>
+      <div id="summary-meta" class="meta"></div>
+      <p>
+        <strong>Result JSON:</strong>
+        <a id="result-json-link" href="#" target="_blank">-</a>
+      </p>
+      <p>
+        <strong>Raw Provider Response:</strong>
+        <a id="raw-provider-link" href="#" target="_blank">-</a><br />
+        <strong>Provider Parsed JSON:</strong>
+        <a id="provider-parsed-link" href="#" target="_blank">-</a>
+      </p>
+      <div id="warnings-wrap" class="hidden">
+        <p class="warn">Warnings:</p>
+        <ul id="warnings-list"></ul>
       </div>
-    {% endif %}
+    </div>
+
+    <div id="table-card" class="card hidden">
+      <h2>Detected Duct Lines</h2>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>ID</th>
+              <th>Duct ID</th>
+              <th>Type</th>
+              <th>Line (x1, y1, x2, y2)</th>
+              <th>Confidence</th>
+              <th>Length (px)</th>
+            </tr>
+          </thead>
+          <tbody id="lines-table-body">
+            <tr>
+              <td colspan="6">No duct lines found.</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
   </div>
+
+  <script>
+    const MEDIA_URL = "{{ media_url|escapejs }}";
+    const AVAILABLE_SIZES = {{ available_sizes|safe }};
+    const UPLOAD_URL = "{% url 'detect_upload' %}";
+    const SIZE_URL = "{% url 'detect_size' %}";
+
+    let currentRunId = "";
+    let currentSizes = AVAILABLE_SIZES.slice();
+    let activeDiameter = null;
+    let viewerScale = 1;
+    let viewerBaseScale = 1;
+    let viewerOffsetX = 0;
+    let viewerOffsetY = 0;
+    let dragging = false;
+    let dragStartX = 0;
+    let dragStartY = 0;
+    let dragBaseX = 0;
+    let dragBaseY = 0;
+
+    const uploadForm = document.getElementById("upload-form");
+    const uploadBtn = document.getElementById("upload-btn");
+    const uploadInfo = document.getElementById("upload-info");
+    const uploadError = document.getElementById("upload-error");
+    const viewerCard = document.getElementById("viewer-card");
+    const viewerTitle = document.getElementById("viewer-title");
+    const viewerSubtitle = document.getElementById("viewer-subtitle");
+    const viewerViewport = document.getElementById("viewer-viewport");
+    const viewerImage = document.getElementById("viewer-image");
+    const viewerLoader = document.getElementById("viewer-loader");
+    const viewerLoaderText = document.getElementById("viewer-loader-text");
+    const zoomInBtn = document.getElementById("zoom-in-btn");
+    const zoomOutBtn = document.getElementById("zoom-out-btn");
+    const sizeCard = document.getElementById("size-card");
+    const sizeButtons = document.getElementById("size-buttons");
+    const summaryCard = document.getElementById("summary-card");
+    const summaryMeta = document.getElementById("summary-meta");
+    const resultJsonLink = document.getElementById("result-json-link");
+    const rawProviderLink = document.getElementById("raw-provider-link");
+    const providerParsedLink = document.getElementById("provider-parsed-link");
+    const warningsWrap = document.getElementById("warnings-wrap");
+    const warningsList = document.getElementById("warnings-list");
+    const tableCard = document.getElementById("table-card");
+    const linesTableBody = document.getElementById("lines-table-body");
+
+    function setError(message) {
+      uploadError.textContent = message || "";
+      uploadError.classList.toggle("hidden", !message);
+    }
+
+    function setInfo(message) {
+      uploadInfo.textContent = message || "";
+      uploadInfo.classList.toggle("hidden", !message);
+    }
+
+    function csrfToken() {
+      const input = uploadForm.querySelector('input[name="csrfmiddlewaretoken"]');
+      return input ? input.value : "";
+    }
+
+    function mediaPath(relPath) {
+      if (!relPath) return "#";
+      return `${MEDIA_URL}${relPath}`;
+    }
+
+    function clampScale(value) {
+      const minScale = Math.max(0.08, viewerBaseScale * 0.35);
+      const maxScale = Math.max(minScale + 0.1, viewerBaseScale * 8.0);
+      return Math.max(minScale, Math.min(maxScale, value));
+    }
+
+    function applyViewerTransform() {
+      viewerImage.style.transform = `translate(${viewerOffsetX}px, ${viewerOffsetY}px) scale(${viewerScale})`;
+    }
+
+    function fitViewerToViewport() {
+      if (!viewerImage.naturalWidth || !viewerImage.naturalHeight) {
+        viewerScale = 1;
+        viewerBaseScale = 1;
+        viewerOffsetX = 0;
+        viewerOffsetY = 0;
+        applyViewerTransform();
+        return;
+      }
+
+      const rect = viewerViewport.getBoundingClientRect();
+      if (!rect.width || !rect.height) {
+        viewerScale = 1;
+        viewerBaseScale = 1;
+        viewerOffsetX = 0;
+        viewerOffsetY = 0;
+        applyViewerTransform();
+        return;
+      }
+
+      viewerBaseScale = Math.min(
+        rect.width / viewerImage.naturalWidth,
+        rect.height / viewerImage.naturalHeight
+      );
+      if (!Number.isFinite(viewerBaseScale) || viewerBaseScale <= 0) {
+        viewerBaseScale = 1;
+      }
+
+      viewerScale = viewerBaseScale;
+      const drawWidth = viewerImage.naturalWidth * viewerScale;
+      const drawHeight = viewerImage.naturalHeight * viewerScale;
+      viewerOffsetX = (rect.width - drawWidth) / 2;
+      viewerOffsetY = (rect.height - drawHeight) / 2;
+      applyViewerTransform();
+    }
+
+    function setViewerImage(url) {
+      viewerImage.src = `${url}?t=${Date.now()}`;
+      viewerImage.onload = () => {
+        fitViewerToViewport();
+      };
+    }
+
+    function setViewerLoading(isLoading, label) {
+      viewerLoader.classList.toggle("hidden", !isLoading);
+      viewerLoaderText.textContent = label || "Loading...";
+    }
+
+    async function parseApiResponse(response) {
+      const text = await response.text();
+      let payload = null;
+      try {
+        payload = text ? JSON.parse(text) : {};
+      } catch (_err) {
+        payload = null;
+      }
+      if (!response.ok) {
+        const fallback = `Request failed (${response.status})`;
+        const message = payload && payload.error ? payload.error : fallback;
+        throw new Error(message);
+      }
+      if (!payload || typeof payload !== "object") {
+        throw new Error("Server returned non-JSON response.");
+      }
+      return payload;
+    }
+
+    function renderSizeButtons() {
+      sizeButtons.innerHTML = "";
+      currentSizes.forEach((size) => {
+        const btn = document.createElement("button");
+        btn.type = "button";
+        btn.className = "size-btn";
+        btn.textContent = `${size}"Ø`;
+        btn.dataset.diameter = String(size);
+        if (activeDiameter === size) {
+          btn.classList.add("active");
+        }
+        btn.addEventListener("click", () => runDiameter(size));
+        sizeButtons.appendChild(btn);
+      });
+    }
+
+    function renderSummary(payload) {
+      const summary = payload.summary || {};
+      summaryMeta.innerHTML = "";
+      const chips = [
+        ["Run ID", payload.run_id],
+        ["Selected Diameter", `${payload.selected_diameter}"Ø`],
+        ["Provider", summary.provider_used || "-"],
+        ["Selection Mode", summary.selection_mode || "-"],
+        ["Marker Count", summary.size_marker_count ?? 0],
+        ["Matched Boxes", summary.selected_candidate_count ?? 0],
+        ["Line Segments", summary.line_segment_count ?? 0],
+        ["Verification", summary.verification_status || "-"],
+        ["Strong Ratio", summary.strong_evidence_ratio ?? "-"],
+        ["Marker Covered Ratio", summary.marker_covered_ratio ?? "-"],
+        ["Boundary Complete Ratio", summary.boundary_complete_ratio ?? "-"],
+      ];
+      chips.forEach(([key, value]) => {
+        const chip = document.createElement("div");
+        chip.className = "chip";
+        chip.innerHTML = `<strong>${key}:</strong> ${value}`;
+        summaryMeta.appendChild(chip);
+      });
+
+      resultJsonLink.href = mediaPath(payload.result_json_url);
+      resultJsonLink.textContent = mediaPath(payload.result_json_url);
+      const files = payload.files || {};
+      rawProviderLink.href = mediaPath(files.raw_provider_response);
+      rawProviderLink.textContent = mediaPath(files.raw_provider_response);
+      providerParsedLink.href = mediaPath(files.provider_parsed);
+      providerParsedLink.textContent = mediaPath(files.provider_parsed);
+
+      warningsList.innerHTML = "";
+      const warnings = payload.warnings || [];
+      if (warnings.length) {
+        warnings.forEach((warning) => {
+          const li = document.createElement("li");
+          li.textContent = warning;
+          warningsList.appendChild(li);
+        });
+        warningsWrap.classList.remove("hidden");
+      } else {
+        warningsWrap.classList.add("hidden");
+      }
+    }
+
+    function renderTable(rows) {
+      linesTableBody.innerHTML = "";
+      if (!rows || !rows.length) {
+        linesTableBody.innerHTML = '<tr><td colspan="6">No duct lines found for selected diameter.</td></tr>';
+        return;
+      }
+      rows.forEach((row) => {
+        const tr = document.createElement("tr");
+        tr.innerHTML = `
+          <td>${row.id || ""}</td>
+          <td>${row.duct_id || ""}</td>
+          <td>${row.duct_type || ""}</td>
+          <td>${JSON.stringify(row.line || [])}</td>
+          <td>${row.confidence ?? ""}</td>
+          <td>${row.length_px ?? ""}</td>
+        `;
+        linesTableBody.appendChild(tr);
+      });
+    }
+
+    async function runDiameter(diameter) {
+      if (!currentRunId) {
+        setError("Upload a PDF first.");
+        return;
+      }
+      setError("");
+      setInfo(`Running OCR for ${diameter}"Ø...`);
+      activeDiameter = diameter;
+      renderSizeButtons();
+      setViewerLoading(true, `Annotating ${diameter}"Ø...`);
+
+      try {
+        const response = await fetch(SIZE_URL, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "X-CSRFToken": csrfToken(),
+          },
+          credentials: "same-origin",
+          body: JSON.stringify({ run_id: currentRunId, diameter }),
+        });
+        const payload = await parseApiResponse(response);
+        if (payload.status !== "ok") {
+          throw new Error(payload.error || "Diameter detection failed.");
+        }
+
+        renderSummary(payload);
+        renderTable(payload.table_rows || []);
+        setViewerImage(mediaPath(payload.overlay_url));
+        viewerTitle.textContent = "Annotated Drawing";
+        viewerSubtitle.textContent = `Showing matched boxes and labels for ${diameter}"Ø.`;
+
+        summaryCard.classList.remove("hidden");
+        tableCard.classList.remove("hidden");
+        setInfo(`Completed ${diameter}"Ø detection.`);
+      } catch (err) {
+        setError(err.message || "Diameter detection failed.");
+      } finally {
+        setViewerLoading(false, "");
+      }
+    }
+
+    uploadForm.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      const fileInput = uploadForm.querySelector('input[type="file"]');
+      if (!fileInput || !fileInput.files || !fileInput.files.length) {
+        setError("Please choose a PDF file.");
+        return;
+      }
+
+      setError("");
+      setInfo("Uploading and running LSD...");
+      uploadBtn.disabled = true;
+      setViewerLoading(true, "Running LSD...");
+
+      try {
+        const formData = new FormData(uploadForm);
+        const response = await fetch(UPLOAD_URL, {
+          method: "POST",
+          headers: {
+            "X-CSRFToken": csrfToken(),
+          },
+          credentials: "same-origin",
+          body: formData,
+        });
+        const payload = await parseApiResponse(response);
+        if (payload.status !== "ok") {
+          throw new Error(payload.error || "Upload failed.");
+        }
+
+        currentRunId = payload.run_id;
+        currentSizes = payload.available_sizes || AVAILABLE_SIZES.slice();
+        activeDiameter = null;
+        renderSizeButtons();
+
+        setViewerImage(mediaPath(payload.page_url));
+        viewerTitle.textContent = "Uploaded Drawing";
+        viewerSubtitle.textContent = "LSD run completed. Choose a diameter button to run OCR + matching.";
+        viewerCard.classList.remove("hidden");
+        sizeCard.classList.remove("hidden");
+        summaryCard.classList.add("hidden");
+        tableCard.classList.add("hidden");
+
+        setInfo(
+          `LSD completed. Run ID: ${payload.run_id}. Candidates: ${payload.raw_candidate_line_count || 0}. Select a diameter to continue.`
+        );
+      } catch (err) {
+        setError(err.message || "Upload failed.");
+      } finally {
+        setViewerLoading(false, "");
+        uploadBtn.disabled = false;
+      }
+    });
+
+    viewerViewport.addEventListener("wheel", (event) => {
+      event.preventDefault();
+      if (!viewerImage.naturalWidth || !viewerImage.naturalHeight) return;
+      const rect = viewerViewport.getBoundingClientRect();
+      const px = event.clientX - rect.left;
+      const py = event.clientY - rect.top;
+      const factor = event.deltaY < 0 ? 1.12 : 0.9;
+      const nextScale = clampScale(viewerScale * factor);
+      const scaleRatio = nextScale / viewerScale;
+      viewerOffsetX = px - (px - viewerOffsetX) * scaleRatio;
+      viewerOffsetY = py - (py - viewerOffsetY) * scaleRatio;
+      viewerScale = nextScale;
+      applyViewerTransform();
+    }, { passive: false });
+
+    viewerViewport.addEventListener("mousedown", (event) => {
+      if (event.button !== 0) return;
+      event.preventDefault();
+      dragging = true;
+      viewerViewport.classList.add("dragging");
+      dragStartX = event.clientX;
+      dragStartY = event.clientY;
+      dragBaseX = viewerOffsetX;
+      dragBaseY = viewerOffsetY;
+    });
+
+    window.addEventListener("mousemove", (event) => {
+      if (!dragging) return;
+      viewerOffsetX = dragBaseX + (event.clientX - dragStartX);
+      viewerOffsetY = dragBaseY + (event.clientY - dragStartY);
+      applyViewerTransform();
+    });
+
+    window.addEventListener("mouseup", () => {
+      dragging = false;
+      viewerViewport.classList.remove("dragging");
+    });
+
+    viewerImage.addEventListener("dragstart", (event) => {
+      event.preventDefault();
+    });
+
+    zoomInBtn.addEventListener("click", () => {
+      viewerScale = clampScale(viewerScale * 1.15);
+      applyViewerTransform();
+    });
+
+    zoomOutBtn.addEventListener("click", () => {
+      viewerScale = clampScale(viewerScale * 0.87);
+      applyViewerTransform();
+    });
+
+    window.addEventListener("resize", () => {
+      if (!viewerImage.src) return;
+      fitViewerToViewport();
+    });
+  </script>
 </body>
 </html>
