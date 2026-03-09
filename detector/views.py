@@ -41,8 +41,6 @@ def detect_upload(request):
 
 @require_POST
 def detect_size(request):
-    provider = str(getattr(settings, "AI_PROVIDER", "gemini")).strip().lower() or "gemini"
-
     try:
         if request.content_type and "application/json" in request.content_type.lower():
             payload = json.loads(request.body.decode("utf-8") or "{}")
@@ -59,7 +57,7 @@ def detect_size(request):
         return JsonResponse({"status": "error", "error": "diameter is required."}, status=400)
 
     try:
-        result = detect_diameter_for_run(run_id, diameter, Path(settings.MEDIA_ROOT), provider)
+        result = detect_diameter_for_run(run_id, diameter, Path(settings.MEDIA_ROOT))
     except ValueError as exc:
         return JsonResponse({"status": "error", "error": str(exc)}, status=400)
     except FileNotFoundError as exc:
