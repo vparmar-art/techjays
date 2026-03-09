@@ -1,55 +1,95 @@
-# HVAC Duct Detector (Django Assignment MVP)
+# HVAC Duct Detector (Django Assignment App)
 
-This is a minimal Django app for detecting ducts from HVAC mechanical drawing PDFs.
+This project is a Django web app for HVAC drawing analysis.
 
-## What it does
+Current scope:
+- Upload one mechanical drawing PDF.
+- Run LSD geometry extraction once.
+- Let the user choose a duct diameter (`8`, `10`, `12`, `14`, `18` inches).
+- Run OCR for the selected diameter and highlight matching duct boxes.
 
-- Upload a PDF drawing.
-- Runs AI-assisted duct detection using exactly one provider (`gemini` or `openai`).
-- No local fallback is used.
-- Returns:
-  - Annotated overlay image,
-  - JSON file with normalized duct paths (`duct_segments`) and pixel line segments (`line_segments`),
-  - Verification metrics (`good` / `warn` / `bad`) and parse warnings,
-  - Raw provider response artifacts for debugging,
-  - Run metadata for the selected provider.
+## Current Implementation Approach
 
-## Setup
+### Two-step pipeline
 
-```bash
-python3 -m venv venv
-./venv/bin/pip install -r requirements.txt
-./venv/bin/python manage.py migrate
-```
+#### Step A: Upload + LSD pre-processing (`POST /detect/upload`)
+- Render first PDF page.
+- Estimate plan ROI.
+- Run tiled OpenCV LSD on ROI.
+- Build LSD box candidates from axis-aligned line structure.
 
-## Configure `.env`
+#### Step B: Diameter selection + OCR matching (`POST /detect/size`)
+- Reuse cached LSD output from Step A (LSD does **not** rerun).
+- Run Google Vision OCR on the plan crop for the chosen diameter.
+- Normalize/clean marker detections (`8`, `10`, `12`, `14`, `18` inch formats).
+- Match marker-to-LSD boxes (text-in-box / overlap logic).
+- Draw overlay:
+  - blue = matched duct boxes,
+  - red = detected text markers.
 
-Edit `.env` in the project root and set:
+## Tech Stack
 
-- `AI_PROVIDER=gemini` or `AI_PROVIDER=openai`
-- `AI_REQUEST_TIMEOUT_SECONDS` (read timeout, default `90`)
-- `AI_CONNECT_TIMEOUT_SECONDS` (connect timeout, default `15`)
-- `GEMINI_API_KEY` for Gemini runs
-- `OPENAI_API_KEY` for OpenAI runs
+- Python 3
+- Django 6
+- OpenCV (LSD)
+- PyMuPDF (`fitz`) for PDF rasterization
+- NumPy
+- Google Vision API (via key-based HTTP request)
 
-## Run
+## Project Structure
 
-```bash
-./venv/bin/python manage.py runserver
-```
+- `detector/duct_detection.py`
+  - Core detection pipeline, OCR parsing, matching, overlay generation
+- `detector/views.py`
+  - Upload and size endpoints
+- `detector/templates/detector/index.html`
+  - UI and AJAX behavior
+- `media/runs/<run_id>/`
+  - Per-run debug artifacts and outputs
 
-Open `http://127.0.0.1:8000/` and upload your PDF.
+## Known Limits (Current MVP)
 
-Choose the same provider in the UI as your `AI_PROVIDER` value (or just keep the default).
+- Works on first page only.
+- Marker-driven matching can miss ducts if OCR misses labels.
+- Focus is box-level highlighting, not full connected duct tracing.
+- No production hardening (auth, queueing, autoscaling, SLOs).
 
-## Output files
+## Possible Future Improvements
 
-Each run writes to `media/runs/<run_id>/`:
+### Better duct detection quality
+- Add OCR calibration pass per run:
+  - detect and correct marker offset/drift before matching.
+- Move from local box match to connected duct component extraction:
+  - seed from marker location,
+  - traverse line graph through bends/elbows,
+  - return full duct boundary paths.
+- Add multi-signal fusion:
+  - LSD + contour/edge maps + text proximity + topology rules.
+- Improve size parsing coverage:
+  - handle more notation variants and noisy OCR token splits.
+- Add confidence-driven filtering and operator review mode:
+  - accept high-confidence auto matches,
+  - flag low-confidence candidates for click-to-confirm.
+- Add support for rectangular duct labels (`14x10`, etc.) and pressure class extraction.
 
-- `page.png`
-- `plan_crop.png`
-- `overlay.png`
-- `result.json`
-- `provider_raw_response.json`
-- `provider_parsed.json`
-- `provider_model_text.txt`
+### Performance and reliability
+- Cache OCR results by `(run_id, diameter)` to avoid repeat API calls.
+- Background processing with Celery/RQ for large drawings.
+- Add request-level tracing and structured logs for failure diagnostics.
+
+### Hosting / deployment
+- Containerize app with Docker.
+- Deploy to a managed platform:
+  - Render / Railway / Fly.io for quick assignment demo,
+  - or ECS/GKE/App Runner for scale.
+- Use production web stack:
+  - Gunicorn + Nginx.
+- Use cloud object storage for artifacts:
+  - S3/GCS instead of local `media/`.
+- Add production settings:
+  - `DEBUG=false`, secure secrets, HTTPS, host allowlist, error monitoring.
+- Add simple CI pipeline:
+  - dependency install,
+  - Django checks,
+  - lint/format gate,
+  - deploy on main branch.
