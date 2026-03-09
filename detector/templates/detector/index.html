@@ -1,0 +1,205 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>HVAC Duct Detector (Assignment MVP)</title>
+  <style>
+    body {
+      margin: 0;
+      font-family: "Segoe UI", Tahoma, Geneva, Verdana, sans-serif;
+      background: #f4f7fb;
+      color: #1a1a1a;
+    }
+    .container {
+      max-width: 1200px;
+      margin: 24px auto;
+      padding: 0 16px;
+    }
+    .card {
+      background: #fff;
+      border: 1px solid #d9e2ec;
+      border-radius: 12px;
+      padding: 18px;
+      margin-bottom: 18px;
+      box-shadow: 0 1px 4px rgba(0, 0, 0, 0.06);
+    }
+    h1 {
+      margin: 0 0 8px 0;
+      font-size: 1.5rem;
+    }
+    .subtitle {
+      margin: 0 0 16px 0;
+      color: #4f5f6f;
+    }
+    form p {
+      margin: 12px 0;
+    }
+    button {
+      background: #0f62fe;
+      color: white;
+      border: none;
+      padding: 10px 16px;
+      border-radius: 8px;
+      font-weight: 600;
+      cursor: pointer;
+    }
+    button:hover {
+      background: #054ada;
+    }
+    .error {
+      color: #b30000;
+      font-weight: 600;
+      margin-top: 10px;
+    }
+    .warn {
+      color: #8a4b00;
+      font-weight: 600;
+      margin-top: 8px;
+    }
+    .meta {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+      gap: 10px;
+      margin-top: 8px;
+      margin-bottom: 12px;
+    }
+    .chip {
+      background: #eef4ff;
+      border: 1px solid #cddfff;
+      border-radius: 8px;
+      padding: 8px 10px;
+      font-size: 0.92rem;
+    }
+    img {
+      width: 100%;
+      border: 1px solid #d9e2ec;
+      border-radius: 8px;
+      background: #fff;
+    }
+    .table-wrap {
+      overflow: auto;
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+    }
+    th, td {
+      border: 1px solid #d9e2ec;
+      padding: 8px;
+      text-align: left;
+      font-size: 0.92rem;
+    }
+    th {
+      background: #f6f9fc;
+    }
+    pre {
+      background: #f8fafc;
+      border: 1px solid #d9e2ec;
+      border-radius: 8px;
+      padding: 10px;
+      overflow: auto;
+      font-size: 0.85rem;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <div class="card">
+      <h1>HVAC Duct Detector</h1>
+      <p class="subtitle">Assignment MVP: upload a drawing, run AI-only duct detection, and get annotated output + JSON.</p>
+      <form method="post" enctype="multipart/form-data">
+        {% csrf_token %}
+        {{ form.as_p }}
+        <button type="submit">Detect Ducts</button>
+      </form>
+      {% if error %}
+        <p class="error">{{ error }}</p>
+      {% endif %}
+    </div>
+
+    {% if result %}
+      <div class="card">
+        <h2>Run Summary</h2>
+        <div class="meta">
+          <div class="chip"><strong>Run ID:</strong> {{ result.run_id }}</div>
+          <div class="chip"><strong>Requested:</strong> {{ result.provider_requested }}</div>
+          <div class="chip"><strong>Used:</strong> {{ result.provider_used }}</div>
+          <div class="chip"><strong>Duct Line Count:</strong> {{ result.detection_count }}</div>
+          <div class="chip"><strong>Selection Mode:</strong> {{ result.selection_mode }}</div>
+          <div class="chip"><strong>LSD Enabled:</strong> {{ result.lsd_enabled }}</div>
+          <div class="chip"><strong>Verification:</strong> {{ result.verification.status }}</div>
+          <div class="chip"><strong>Strong Evidence Ratio:</strong> {{ result.verification.metrics.strong_evidence_ratio }}</div>
+          <div class="chip"><strong>Marker Covered Ratio:</strong> {{ result.verification.metrics.marker_covered_ratio }}</div>
+          <div class="chip"><strong>Boundary Complete Ratio:</strong> {{ result.verification.metrics.boundary_complete_ratio }}</div>
+          <div class="chip"><strong>Seed Count:</strong> {{ result.marker_seeding.seed_count }}</div>
+          <div class="chip"><strong>Expanded Count:</strong> {{ result.graph_expansion.expanded_count }}</div>
+        </div>
+        <p>
+          <strong>Result JSON:</strong>
+          <a href="{{ media_url }}{{ result.files.json }}" target="_blank">{{ media_url }}{{ result.files.json }}</a>
+        </p>
+        <p>
+          <strong>Raw Provider Response:</strong>
+          <a href="{{ media_url }}{{ result.files.raw_provider_response }}" target="_blank">{{ media_url }}{{ result.files.raw_provider_response }}</a>
+          <br />
+          <strong>Provider Parsed JSON:</strong>
+          <a href="{{ media_url }}{{ result.files.provider_parsed }}" target="_blank">{{ media_url }}{{ result.files.provider_parsed }}</a>
+        </p>
+        {% if result.warnings %}
+          <p class="warn">Warnings:</p>
+          <ul>
+            {% for warning in result.warnings %}
+              <li>{{ warning }}</li>
+            {% endfor %}
+          </ul>
+        {% endif %}
+      </div>
+
+      <div class="card">
+        <h2>Annotated Output</h2>
+        <img src="{{ media_url }}{{ result.files.overlay }}" alt="Duct detection overlay" />
+      </div>
+
+      <div class="card">
+        <h2>Detected Duct Lines</h2>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>ID</th>
+                <th>Duct ID</th>
+                <th>Type</th>
+                <th>Line (x1, y1, x2, y2)</th>
+                <th>Confidence</th>
+                <th>Length (px)</th>
+              </tr>
+            </thead>
+            <tbody>
+              {% for duct in result.duct_lines %}
+                <tr>
+                  <td>{{ duct.id }}</td>
+                  <td>{{ duct.duct_id }}</td>
+                  <td>{{ duct.duct_type }}</td>
+                  <td>{{ duct.line }}</td>
+                  <td>{{ duct.confidence }}</td>
+                  <td>{{ duct.length_px }}</td>
+                </tr>
+              {% empty %}
+                <tr>
+                  <td colspan="6">No duct lines found.</td>
+                </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <div class="card">
+        <h2>Provider Attempts</h2>
+        <pre>{{ result.attempts }}</pre>
+      </div>
+    {% endif %}
+  </div>
+</body>
+</html>
